@@ -1,23 +1,34 @@
-name: Windows RDP Tunnel (Secured)
+name: Windows RDP Tunnel (Full Fix)
 
-on: workflow_dispatch  # Only manual trigger for security
+on: workflow_dispatch  # Manual trigger only
 
 jobs:
   rdp-tunnel:
     runs-on: windows-latest
-    timeout-minutes: 360  # Max 6 hours for free tier
+    timeout-minutes: 360  # 6h max for free tier
 
     steps:
     - name: Download ngrok v3
       shell: powershell
       run: |
-        Invoke-WebRequest https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip -OutFile ngrok.zip
+        # Download latest ngrok v3
+        Invoke-WebRequest "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip" -OutFile ngrok.zip
         Expand-Archive ngrok.zip -DestinationPath ngrok
+        
+        # Verify extraction
+        if (-not (Test-Path ".\ngrok\ngrok.exe")) {
+            Write-Host "::error::Ngrok extraction failed!"
+            exit 1
+        }
+        
+        # Add to PATH
+        echo "$pwd\ngrok" | Out-File -FilePath $Env:GITHUB_PATH -Append
 
     - name: Authenticate ngrok
       shell: powershell
       run: |
         .\ngrok\ngrok.exe config add-authtoken $Env:NGROK_AUTH_TOKEN
+        if (-not $?) { exit 1 }
       env:
         NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
 
@@ -28,65 +39,59 @@ jobs:
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
         Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
         
-        # Create secure random password
+        # Generate secure password
         Add-Type -AssemblyName System.Web
         $password = [System.Web.Security.Membership]::GeneratePassword(24, 4)
-        Set-LocalUser -Name "runneradmin" -Password (ConvertTo-SecureString -AsPlainText $password -Force)
+        Set-LocalUser -Name "runneradmin" -Password (ConvertTo-SecureString $password -AsPlainText -Force)
         Write-Host "::add-mask::$password"
         Write-Host "Generated password: $password"
 
     - name: Start ngrok tunnel
       shell: powershell
       run: |
-    # Start ngrok with logging
-    $logPath = "$pwd\ngrok.log"
-    Start-Process -FilePath .\ngrok\ngrok.exe -ArgumentList "tcp 3389 --log $logPath" -NoNewWindow
-    
-    # Verify ngrok process
-    Start-Sleep -Seconds 5
-    if (-not (Get-Process ngrok -ErrorAction SilentlyContinue)) {
-        Write-Host "::error::Ngrok failed to start!"
-        Get-Content $logPath -ErrorAction SilentlyContinue | Write-Host
-        exit 1
-    }
-
-    # Extended retry logic
-    $maxRetries = 10
-    $retryCount = 0
-    $publicUrl = $null
-    
-    while ($retryCount -lt $maxRetries -and -not $publicUrl) {
-        try {
-            $response = Invoke-RestMethod -Uri http://localhost:4040/api/tunnels -ErrorAction Stop
-            $publicUrl = $response.tunnels[0].public_url
-            Write-Host "::add-mask::$publicUrl"
-            Write-Host "RDP URL: $publicUrl"
+        $logPath = "$pwd\ngrok.log"
+        $retryCount = 0
+        $maxRetries = 15
+        
+        # Start ngrok with logging
+        Start-Process -FilePath ".\ngrok\ngrok.exe" -ArgumentList "tcp 3389 --log $logPath --log-level debug" -NoNewWindow
+        
+        # Wait for tunnel establishment
+        while ($retryCount -lt $maxRetries) {
+            try {
+                $response = Invoke-RestMethod -Uri "http://localhost:4040/api/tunnels" -ErrorAction Stop
+                if ($response.tunnels.Count -gt 0) {
+                    $publicUrl = $response.tunnels[0].public_url
+                    Write-Host "::add-mask::$publicUrl"
+                    Write-Host "RDP URL: $publicUrl"
+                    break
+                }
+            }
+            catch {
+                $retryCount++
+                Write-Host "Attempt $retryCount/$maxRetries - Waiting for ngrok API..."
+                Get-Content $logPath -Tail 10 -ErrorAction SilentlyContinue | Write-Host
+                Start-Sleep -Seconds 10
+            }
         }
-        catch {
-            Write-Host "Attempt $($retryCount+1)/$maxRetries - Waiting for ngrok API..."
-            Get-Content $logPath -Tail 10 -ErrorAction SilentlyContinue | Write-Host
-            Start-Sleep -Seconds 10
-            $retryCount++
-        }
-    }
 
-    if (-not $publicUrl) {
-        Write-Host "::error::Failed to get tunnel URL after $maxRetries attempts"
-        Get-Content $logPath -ErrorAction SilentlyContinue | Write-Host
-        Get-Process ngrok | Stop-Process -Force
-        exit 1
-    }
+        if (-not $publicUrl) {
+            Write-Host "::error::Failed to establish tunnel after $maxRetries attempts"
+            Get-Content $logPath -ErrorAction SilentlyContinue | Write-Host
+            Get-Process ngrok | Stop-Process -Force -ErrorAction SilentlyContinue
+            exit 1
+        }
 
     - name: Maintain connection
       shell: powershell
       run: |
         try {
             while ($true) {
-                Write-Host "Active at $(Get-Date -Format 'HH:mm:ss')"
+                Write-Host "Connection active: $(Get-Date -Format 'HH:mm:ss')"
                 Start-Sleep -Seconds 300
             }
         }
         finally {
-            Write-Host "Cleaning up..."
+            Write-Host "Cleaning up resources..."
             Get-Process ngrok -ErrorAction SilentlyContinue | Stop-Process -Force
         }
