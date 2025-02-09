@@ -1,4 +1,4 @@
-name: Windows RDP Tunnel (Fixed PATH)
+name: Windows RDP Tunnel (Fixed API Check)
 
 on: workflow_dispatch
 
@@ -11,36 +11,44 @@ jobs:
     - name: Setup ngrok
       shell: powershell
       run: |
-        # Download and extract ngrok
         Invoke-WebRequest https://bin.equinox.io/c/4VmDzA7iaHb/ngrok-stable-windows-amd64.zip -OutFile ngrok.zip
         Expand-Archive ngrok.zip -DestinationPath ngrok
-        
-        # Add to PATH using modern method
-        $ngrokPath = "$pwd\ngrok"
-        echo "$ngrokPath" | Out-File -FilePath $Env:GITHUB_PATH -Append
 
     - name: Authenticate ngrok
       shell: powershell
-      run: |
-        # Use full path to avoid issues
-        .\ngrok\ngrok.exe authtoken $Env:NGROK_AUTH_TOKEN
+      run: .\ngrok\ngrok.exe authtoken $Env:NGROK_AUTH_TOKEN
       env:
         NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
 
-    - name: Configure RDP
+    - name: Start ngrok tunnel with logging
       shell: powershell
       run: |
-        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
-        Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-
-    - name: Start ngrok tunnel
-      shell: powershell
-      run: |
-        Start-Process -FilePath .\ngrok\ngrok.exe -ArgumentList "tcp 3389"
-        Start-Sleep -Seconds 15
-        $tunnels = Invoke-RestMethod -Uri http://localhost:4040/api/tunnels
-        $publicUrl = $tunnels.tunnels[0].public_url
-        Write-Host "RDP URL: $publicUrl"
+        # Start ngrok with logging
+        $ngrokProcess = Start-Process -FilePath .\ngrok\ngrok.exe -PassThru -ArgumentList "tcp 3389 --log=stdout"
+        
+        # Wait for API to become available
+        $retryCount = 0
+        while ($retryCount -lt 10) {
+            try {
+                $tunnels = Invoke-RestMethod -Uri http://localhost:4040/api/tunnels -ErrorAction Stop
+                $publicUrl = $tunnels.tunnels[0].public_url
+                Write-Host "RDP URL: $publicUrl"
+                break
+            }
+            catch {
+                Write-Host "Waiting for ngrok API... ($retryCount/10)"
+                Start-Sleep -Seconds 5
+                $retryCount++
+            }
+        }
+        
+        if (-not $publicUrl) {
+            Write-Host "::error::Failed to get ngrok URL"
+            exit 1
+        }
+        
+        # Keep process running
+        $ngrokProcess.WaitForExit()
 
     - name: Keep alive
       shell: powershell
