@@ -1,4 +1,4 @@
-name: Windows RDP Tunnel (Absolute Path Fix)
+name: Windows RDP Tunnel (ngrok v3+)
 
 on: workflow_dispatch
 
@@ -8,83 +8,35 @@ jobs:
     timeout-minutes: 360
 
     steps:
-    - name: Setup ngrok
+    - name: Download ngrok v3
       shell: powershell
       run: |
-        # Get absolute path
-        $ngrokDir = "$pwd\ngrok"
-        Invoke-WebRequest https://bin.equinox.io/c/4VmDzA7iaHb/ngrok-stable-windows-amd64.zip -OutFile ngrok.zip
-        Expand-Archive ngrok.zip -DestinationPath $ngrokDir
-        
-        # Verify extraction
-        if (-not (Test-Path "$ngrokDir\ngrok.exe")) {
-            Write-Host "::error::Ngrok extraction failed!"
-            Get-ChildItem $ngrokDir
-            exit 1
-        }
+        # Updated download URL for ngrok v3
+        Invoke-WebRequest https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip -OutFile ngrok.zip
+        Expand-Archive ngrok.zip -DestinationPath ngrok
 
     - name: Authenticate ngrok
       shell: powershell
       run: |
-        $ngrokExe = "$pwd\ngrok\ngrok.exe"
-        & $ngrokExe authtoken $Env:NGROK_AUTH_TOKEN
+        .\ngrok\ngrok.exe config add-authtoken $Env:NGROK_AUTH_TOKEN
       env:
         NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
 
-    - name: Start ngrok with verification
+    - name: Start ngrok tunnel
       shell: powershell
       run: |
         $ngrokExe = "$pwd\ngrok\ngrok.exe"
-        $logFile = "$pwd\ngrok.log"
         
-        # Start process directly (not in job)
-        Start-Process $ngrokExe -ArgumentList "tcp 3389 --log=stdout --log-level=debug" -NoNewWindow
+        # Start ngrok with version check
+        & $ngrokExe version
+        Start-Process $ngrokExe -ArgumentList "tcp 3389" -NoNewWindow
         
-        # Verify process start
-        Start-Sleep -Seconds 5
-        if (-not (Get-Process ngrok -ErrorAction SilentlyContinue)) {
-            Write-Host "::error::Ngrok process failed to start!"
-            exit 1
-        }
+        # Wait and get URL
+        Start-Sleep -Seconds 15
+        $tunnels = Invoke-RestMethod -Uri http://localhost:4040/api/tunnels
+        $publicUrl = $tunnels.tunnels[0].public_url
+        Write-Host "RDP URL: $publicUrl"
 
-        # Extended retry logic with file logging
-        $maxRetries = 20
-        $retryInterval = 10
-        $connected = $false
-        
-        for ($i = 0; $i -lt $maxRetries; $i++) {
-            try {
-                $status = Invoke-RestMethod -Uri http://localhost:4040/api/tunnels -ErrorAction Stop
-                if ($status.tunnels.Count -gt 0) {
-                    $publicUrl = $status.tunnels[0].public_url
-                    Write-Host "RDP URL: $publicUrl"
-                    $connected = $true
-                    break
-                }
-            }
-            catch {
-                Write-Host "Attempt $($i+1)/$maxRetries - Checking ngrok status..."
-                Get-Content $logFile -Tail 10 -ErrorAction SilentlyContinue | Write-Host
-            }
-            Start-Sleep -Seconds $retryInterval
-        }
-
-        if (-not $connected) {
-            Write-Host "::error::Final failure after $maxRetries attempts"
-            Get-Content $logFile -ErrorAction SilentlyContinue | Write-Host
-            exit 1
-        }
-
-    - name: Maintain connection
+    - name: Keep alive
       shell: powershell
-      run: |
-        try {
-            while ($true) {
-                Write-Host "Active at $(Get-Date -Format 'HH:mm:ss')"
-                Start-Sleep -Seconds 300
-            }
-        }
-        finally {
-            Write-Host "Cleaning up..."
-            Get-Process ngrok -ErrorAction SilentlyContinue | Stop-Process -Force
-        }
+      run: while ($true) { Start-Sleep -Seconds 60 }
