@@ -5,7 +5,7 @@ on: workflow_dispatch
 jobs:
   expose-rdp:
     runs-on: windows-latest
-    timeout-minutes: 360  # 6h max for Free tier
+    timeout-minutes: 360
 
     steps:
     - name: Setup ngrok
@@ -15,14 +15,14 @@ jobs:
         Invoke-WebRequest https://bin.equinox.io/c/4VmDzA7iaHb/ngrok-stable-windows-amd64.zip -OutFile ngrok.zip
         Expand-Archive ngrok.zip -DestinationPath ngrok
         
-        # Add to PATH for subsequent steps
+        # Add to PATH using modern method
         $ngrokPath = "$pwd\ngrok"
-        echo "::add-path::$ngrokPath"
+        echo "$ngrokPath" | Out-File -FilePath $Env:GITHUB_PATH -Append
 
     - name: Authenticate ngrok
       shell: powershell
       run: |
-        # Use full path to avoid PATH issues
+        # Use full path to avoid issues
         .\ngrok\ngrok.exe authtoken $Env:NGROK_AUTH_TOKEN
       env:
         NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
@@ -30,14 +30,12 @@ jobs:
     - name: Configure RDP
       shell: powershell
       run: |
-        # RDP configuration commands
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
         Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
 
     - name: Start ngrok tunnel
       shell: powershell
       run: |
-        # Use explicit path
         Start-Process -FilePath .\ngrok\ngrok.exe -ArgumentList "tcp 3389"
         Start-Sleep -Seconds 15
         $tunnels = Invoke-RestMethod -Uri http://localhost:4040/api/tunnels
