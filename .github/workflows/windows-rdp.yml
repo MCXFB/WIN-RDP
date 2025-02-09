@@ -1,17 +1,16 @@
-name: Windows RDP Tunnel (ngrok v3+)
+name: Windows RDP Tunnel (Secured)
 
-on: workflow_dispatch
+on: workflow_dispatch  # Only manual trigger for security
 
 jobs:
-  expose-rdp:
+  rdp-tunnel:
     runs-on: windows-latest
-    timeout-minutes: 360
+    timeout-minutes: 360  # Max 6 hours for free tier
 
     steps:
     - name: Download ngrok v3
       shell: powershell
       run: |
-        # Updated download URL for ngrok v3
         Invoke-WebRequest https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip -OutFile ngrok.zip
         Expand-Archive ngrok.zip -DestinationPath ngrok
 
@@ -22,21 +21,48 @@ jobs:
       env:
         NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
 
+    - name: Configure RDP
+      shell: powershell
+      run: |
+        # Enable RDP
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
+        Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+        
+        # Create secure random password
+        Add-Type -AssemblyName System.Web
+        $password = [System.Web.Security.Membership]::GeneratePassword(24, 4)
+        Set-LocalUser -Name "runneradmin" -Password (ConvertTo-SecureString -AsPlainText $password -Force)
+        Write-Host "::add-mask::$password"
+        Write-Host "Generated password: $password"
+
     - name: Start ngrok tunnel
       shell: powershell
       run: |
-        $ngrokExe = "$pwd\ngrok\ngrok.exe"
+        Start-Process -FilePath .\ngrok\ngrok.exe -ArgumentList "tcp 3389"
+        Start-Sleep -Seconds 30
         
-        # Start ngrok with version check
-        & $ngrokExe version
-        Start-Process $ngrokExe -ArgumentList "tcp 3389" -NoNewWindow
-        
-        # Wait and get URL
-        Start-Sleep -Seconds 15
-        $tunnels = Invoke-RestMethod -Uri http://localhost:4040/api/tunnels
-        $publicUrl = $tunnels.tunnels[0].public_url
-        Write-Host "RDP URL: $publicUrl"
+        try {
+            $tunnels = Invoke-RestMethod -Uri http://localhost:4040/api/tunnels
+            $publicUrl = $tunnels.tunnels[0].public_url
+            Write-Host "::add-mask::$publicUrl"
+            Write-Host "RDP URL: $publicUrl"
+        }
+        catch {
+            Write-Host "::error::Failed to get ngrok URL"
+            Get-Process ngrok | Stop-Process -Force
+            exit 1
+        }
 
-    - name: Keep alive
+    - name: Maintain connection
       shell: powershell
-      run: while ($true) { Start-Sleep -Seconds 60 }
+      run: |
+        try {
+            while ($true) {
+                Write-Host "Active at $(Get-Date -Format 'HH:mm:ss')"
+                Start-Sleep -Seconds 300
+            }
+        }
+        finally {
+            Write-Host "Cleaning up..."
+            Get-Process ngrok -ErrorAction SilentlyContinue | Stop-Process -Force
+        }
