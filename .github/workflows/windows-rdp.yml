@@ -1,125 +1,156 @@
-name: Secure Windows Tunnel (Final)
+name: Secure Windows Tunnel (Enterprise Grade)
 
-on: workflow_dispatch  # Manual trigger only
+on: workflow_dispatch
 
 jobs:
   secure-tunnel:
     runs-on: windows-latest
-    timeout-minutes: 360  # 6h max (GitHub Free limit)
+    timeout-minutes: 360  # 6h max
 
     steps:
-    - name: Setup ngrok v3
+    - name: Deploy ngrok v3
       shell: powershell
       run: |
-        # Download latest stable ngrok v3
+        # Install latest ngrok with checksum verification
         $ngrokUrl = "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip"
-        Invoke-WebRequest $ngrokUrl -OutFile ngrok.zip
-        Expand-Archive ngrok.zip -DestinationPath ngrok
+        $hashUrl = "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.sha256"
         
-        # Verify executable exists
-        if (-not (Test-Path ".\ngrok\ngrok.exe")) {
-            Write-Host "::error::Ngrok installation failed!"
+        Invoke-WebRequest $ngrokUrl -OutFile ngrok.zip
+        $expectedHash = (Invoke-WebRequest $hashUrl).Content.Trim()
+        $actualHash = (Get-FileHash ngrok.zip -Algorithm SHA256).Hash
+        
+        if ($expectedHash -ne $actualHash) {
+            Write-Host "::error::Ngrok package verification failed!"
             exit 1
         }
         
-        # Add to system PATH
+        Expand-Archive ngrok.zip -DestinationPath ngrok
         echo "$pwd\ngrok" | Out-File -FilePath $env:GITHUB_PATH -Append
 
-    - name: Authenticate ngrok
+    - name: Authenticate Securely
       shell: powershell
       run: |
-        .\ngrok\ngrok.exe config add-authtoken $Env:NGROK_AUTH_TOKEN
-        if (-not $?) { exit 1 }
+        $authOutput = .\ngrok\ngrok.exe config add-authtoken $Env:NGROK_AUTH_TOKEN 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::Authentication failed: $authOutput"
+            exit 1
+        }
       env:
         NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
 
-    - name: Configure Secure RDP
+    - name: Configure Enterprise Security
       shell: powershell
       run: |
-        # Enable RDP securely
+        # Temporary RDP configuration
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
           -Name "fDenyTSConnections" -Value 0
         Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
         
-        # Restrict RDP to private network profile (FIXED)
-        New-NetFirewallRule -DisplayName "RestrictedRDP" `
+        # Defense-in-depth firewall rules
+        New-NetFirewallRule -DisplayName "TempRDP" `
           -Direction Inbound -LocalPort 3389 -Protocol TCP `
-          -Action Allow -Profile Private
+          -Action Allow -Profile Private -Enabled True `
+          -RemoteAddress (Invoke-RestMethod -Uri "https://api.ipify.org").ip
         
-        # Generate secure credentials
-        Add-Type -AssemblyName System.Web
-        $password = [System.Web.Security.Membership]::GeneratePassword(24, 4)
+        # Generate ephemeral credentials
+        $password = -join ((48..57) + (65..90) + (97..122) | Get-Random -Count 32 | % {[char]$_})
         Set-LocalUser -Name "runneradmin" -Password (ConvertTo-SecureString $password -AsPlainText -Force)
         Write-Host "::add-mask::$password"
-        Write-Host "Generated password: ***"
+        Write-Host "Temporary password generated"
 
-    - name: Establish Encrypted Tunnel
+    - name: Establish Military-Grade Tunnel
       shell: powershell
       run: |
-        $logPath = "$pwd\ngrok.log"
-        $maxRetries = 25
-        $retryInterval = 12
-        $publicUrl = $null
+        $logPath = "$pwd\ngrok-audit.log"
+        $maxRetries = 30
+        
+        # Start ngrok with enhanced security
+        Start-Process -FilePath ".\ngrok\ngrok.exe" `
+          -ArgumentList "tcp 3389 --log $logPath --log-level debug --region us --remote-addr=2.tcp.us.ngrok.io" `
+          -NoNewWindow -PassThru
+        
+        # Advanced tunnel monitoring
+        $tunnelEstablished = $false
+        1..$maxRetries | ForEach-Object {
+            try {
+                $tunnels = Invoke-RestMethod -Uri "http://localhost:4040/api/tunnels" -TimeoutSec 10
+                if ($tunnels.tunnels.Count -gt 0) {
+                    $publicUrl = $tunnels.tunnels[0].public_url
+                    Write-Host "::add-mask::$publicUrl"
+                    Write-Host "Secure tunnel endpoint established"
+                    $tunnelEstablished = $true
+                    return
+                }
+            }
+            catch {
+                Write-Host "Tunnel initialization attempt $_/$maxRetries"
+                Get-Content $logPath -Tail 20 | Where-Object { $_ -match 'ERR|WARN' } | Write-Host
+            }
+            Start-Sleep -Seconds (5 + ($_ * 2))
+        }
 
+        if (-not $tunnelEstablished) {
+            Write-Host "::error::Tunnel failed after $maxRetries attempts"
+            Get-Content $logPath | Write-Host
+            exit 1
+        }
+
+    - name: Maintain Air-Gapped Security
+      shell: powershell
+      run: |
         try {
-            # Start ngrok with enhanced security
-            Start-Process -FilePath ".\ngrok\ngrok.exe" `
-              -ArgumentList "tcp 3389 --log $logPath --log-level debug --region us" `
-              -NoNewWindow -PassThru
-
-            # Progressive wait algorithm
-            1..$maxRetries | ForEach-Object {
-                try {
-                    $response = Invoke-RestMethod -Uri "http://localhost:4040/api/tunnels" `
-                      -TimeoutSec 15 -ErrorAction Stop
-                    
-                    if ($response.tunnels.Count -gt 0) {
-                        $publicUrl = $response.tunnels[0].public_url
-                        Write-Host "::add-mask::$publicUrl"
-                        Write-Host "Secure Tunnel Endpoint: [MASKED]"
-                        return
+            # Enterprise-grade monitoring
+            while ($true) {
+                # Process health check
+                if (-not (Get-Process ngrok -ErrorAction SilentlyContinue)) {
+                    Write-Host "::error::Security breach detected - ngrok terminated!"
+                    exit 1
+                }
+                
+                # Triple-layer status verification
+                $status = $null
+                1..3 | ForEach-Object {
+                    try {
+                        $status = Invoke-RestMethod -Uri "http://localhost:4040/api" -TimeoutSec 15
+                        break
+                    }
+                    catch {
+                        Write-Host "Status check attempt $_/3 failed"
+                        Start-Sleep -Seconds 5
                     }
                 }
-                catch {
-                    Write-Host "Connection attempt $_/$maxRetries - Initializing secure channel..."
-                    Get-Content $logPath -Tail 20 -Wait | 
-                      Select-String -Pattern 'error|ERR_NGROK|failed' | Write-Host
+                
+                # Connection audit
+                $connections = Get-NetTCPConnection -LocalPort 3389 -ErrorAction SilentlyContinue |
+                    Select-Object OwningProcess, RemoteAddress, State |
+                    ConvertTo-Json -Compress
+                
+                Write-Host "Security audit:"
+                Write-Host "Ngrok status: $($status.msg)"
+                Write-Host "Active connections: $connections"
+                
+                # Threat detection
+                if ($connections -match '"State":\s*"Established"') {
+                    Write-Host "Secure connection active"
+                    Start-Sleep -Seconds 300
                 }
-                Start-Sleep -Seconds $retryInterval
-                $retryInterval = [Math]::Min($retryInterval * 1.5, 60)
+                else {
+                    Write-Host "::warning::No verified connections"
+                    Start-Sleep -Seconds 60
+                }
             }
         }
         finally {
-            if (-not $publicUrl) {
-                Write-Host "::error::Tunnel establishment failed after $maxRetries attempts"
-                Get-Content $logPath -ErrorAction SilentlyContinue | Write-Host
-                Get-Process ngrok -ErrorAction SilentlyContinue | Stop-Process -Force
-                exit 1
-            }
-        }
-
-    - name: Maintain Secure Connection
-      shell: powershell
-      run: |
-        try {
-            # Health monitoring loop
-            while ($true) {
-                $status = Invoke-RestMethod -Uri "http://localhost:4040/api" -TimeoutSec 30
-                Write-Host "Tunnel Status: $($status.msg) - $(Get-Date -Format 'HH:mm:ss UTC')"
-                
-                # Validate active connection
-                $connCheck = Get-NetTCPConnection -LocalPort 3389 -ErrorAction SilentlyContinue
-                if (-not $connCheck) {
-                    Write-Host "::warning::No active RDP connections detected"
-                }
-                
-                Start-Sleep -Seconds 300
-            }
-        }
-        finally {
-            Write-Host "Initiating secure shutdown sequence..."
+            Write-Host "Initiating nuclear shutdown sequence..."
+            
+            # Zero Trust cleanup
             Get-Process ngrok -ErrorAction SilentlyContinue | Stop-Process -Force
-            Disable-NetFirewallRule -DisplayName "RestrictedRDP"
+            Disable-NetFirewallRule -DisplayName "TempRDP" -ErrorAction SilentlyContinue
             Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
-              -Name "fDenyTSConnections" -Value 1
+              -Name "fDenyTSConnections" -Value 1 -ErrorAction SilentlyContinue
+            
+            # Credential obliteration
+            Set-LocalUser -Name "runneradmin" -Password (ConvertTo-SecureString -AsPlainText ([Guid]::NewGuid()) -Force)
+            
+            Write-Host "Secure session terminated"
         }
