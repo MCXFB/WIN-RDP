@@ -25,7 +25,7 @@ jobs:
 
     - name: www.toolboxlap.xyz
       env:
-        PLAYIT_AUTH_KEY: bdaeeb025e8054fc89c33b3829d13abf287f44bdc51f5716aa2adda4858e30ac 
+        PLAYIT_AUTH_KEY: 558c3207eb2bbd802e66f2bfc1355aab823c754b3a22d9378b84d7b6b7650129 
       run: |
         Start-Process -FilePath "$env:USERPROFILE\playit.exe" -ArgumentList "--secret $env:PLAYIT_AUTH_KEY" -NoNewWindow -Wait
         Start-Process -FilePath "$env:USERPROFILE\playit.exe" -NoNewWindow
