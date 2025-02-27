@@ -1,0 +1,36 @@
+name: SSH001
+
+on:
+  workflow_dispatch:
+
+jobs:
+  setup-ssh-tunnel:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Check out the repository
+      uses: actions/checkout@v2
+
+    - name: Install Arch Linux in chroot
+      run: |
+        sudo apt update
+        sudo apt install -y arch-install-scripts
+        mkdir arch_root && cd arch_root
+        sudo pacstrap -c . base openssh
+
+    - name: Configure SSH
+      run: |
+        echo "runneradmin:admin@123" | sudo chpasswd
+        sudo sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config
+        sudo sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config
+        sudo systemctl enable sshd
+        sudo systemctl start sshd
+
+    - name: Print SSH Connection Info
+      run: |
+        echo "Use the following command to connect:"
+        echo "ssh runneradmin@$(curl -s ifconfig.me)"
+    
+    - name: Keep the GitHub Action Runner Alive
+      run: |
+        while true; do sleep 60; done
